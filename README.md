@@ -1,85 +1,87 @@
-# ESP32 智能环境监测站 v2.0
+# ESP32 SmartStation v2.2
 
-基于 ESP32 的多功能环境监测系统，支持传感器数据采集、内网 Web 实时显示、异常报警。
-
-![ESP32](https://img.shields.io/badge/ESP32-WROOM--32-orange) ![Arduino](https://img.shields.io/badge/Arduino-IDE-blue) ![License](https://img.shields.io/badge/License-MIT-green)
-
-## 功能
-
-- **多传感器采集**：温度（NTC热敏电阻）、光照（光敏电阻）、人体感应（PIR）、超声波测距
-- **Web 实时监控**：手机/电脑浏览器访问内网 IP，3秒自动刷新
-- **异常报警**：蜂鸣器 + LED，支持布防/撤防切换
-- **JSON API**：`/api` 接口返回传感器数据，方便对接 Home Assistant 等平台
-- **模块化架构**：每个功能独立 namespace，易扩展
+智能环境监测站 — NTC温度 / 光照 / PIR人体感应 / 超声波测距 + WiFi Web面板 + JSON API
 
 ## 硬件
 
-| 模块 | 引脚 |
-|------|------|
-| NTC 温度传感器 | GPIO 34 (ADC1) |
-| 光敏电阻 | GPIO 35 (ADC1) |
-| PIR 人体红外 | GPIO 14 |
-| 超声波 Trig | GPIO 13 |
-| 超声波 Echo | GPIO 12 |
-| 有源蜂鸣器 | GPIO 16 |
-| LED（220Ω电阻）| GPIO 5 |
-| 按键 | GPIO 23 |
+- 开发板: ESP32 (任意型号)
+- NTC热敏电阻 (MF52AT, B=3950, R25=10kΩ)
+- 光敏电阻 (分压电路, 暗阻1MΩ/亮阻1kΩ)
+- PIR人体红外传感器
+- HC-SR04超声波模块
+- 有源蜂鸣器
+- LED (PWM)
+- 按键 (中断)
 
-> 温度和光照使用 ADC1 引脚，避免与 WiFi 冲突。
+## 功能
 
-## 使用
+- 4传感器实时采集 (500ms间隔)
+- WiFi Web暗色主题面板 (3秒自动刷新)
+- JSON API (`/api`)
+- 远程布防/撤防 (`/alarm`)
+- 按键物理切换报警状态
+- LED环境指示灯 (独立于报警系统)
 
-1. 修改代码中的 WiFi 配置：
-```cpp
-const char* WIFI_SSID     = "你的WiFi名";
-const char* WIFI_PASSWORD = "WiFi密码";
-```
+## 更新记录
 
-2. 用 Arduino IDE 烧录（开发板选 ESP32 Dev Module）
+### v2.2 (2026-03-28)
+- **异步采集**: 传感器读取迁移到FreeRTOS任务, 跑在Core1, 不阻塞Core0的Web服务
+- **温度校准**: 新增 `TEMP_CALIBRATE` 偏移量, 修正ESP32 ADC偏差 (-10°C)
+- **共享数据**: 传感器数据通过mutex跨核安全读写 (`SharedData` 模块)
+- **LED独立**: LED模块完全脱离报警系统, 直接根据环境状态响应, 不受布防/撤防影响
+- **报警精简**: Alarm模块只控制蜂鸣器, 逻辑更清晰
+- **状态分类**: 统一的 `EnvStatus` 结构体, 消除颜色/状态/样式三处重复代码
+- **响应式布局**: 新增 `@media(max-width:500px)` 手机端单列适配
+- **API补全**: `/api` 新增 `led` 字段, 返回当前LED状态
+- **WiFi容错**: 连接失败不再死循环, LED闪6次后继续运行传感器和LED
+- **代码清理**: 删除未使用的函数, 降低String对象创建次数
 
-3. 打开串口监视器（115200 baud），查看 IP 地址
+### v2.1 (2026-03-28) [废弃]
+- LED从Alarm独立 (v2.2进一步完善)
 
-4. 浏览器访问该 IP，即可看到监控面板
+### v2.0 (2026-03-27)
+- 初始模块化重构版
+- namespace模块划分: Config/Pins/Sensors/Alarm/Button/WebPage/Web/Wifi
+- Steinhart-Hart温度转换
+- Web暗色主题UI
+- 按键中断布防/撤防
+
+## 引脚
+
+| 功能 | 引脚 | 类型 |
+|------|------|------|
+| 温度 (NTC) | GPIO34 | ADC1 |
+| 光照 | GPIO35 | ADC1 |
+| PIR | GPIO14 | Digital |
+| 超声波 Trig | GPIO13 | Digital |
+| 超声波 Echo | GPIO12 | Digital |
+| 蜂鸣器 | GPIO16 | Digital |
+| LED | GPIO5 | PWM |
+| 按键 | GPIO23 | Digital+INT |
+
+## 校准
+
+温度偏高/偏低时修改 `Config::TEMP_CALIBRATE`:
+- 读数比实际高10°C → 设为 `-10.0`
+- 读数比实际低5°C → 设为 `5.0`
 
 ## API
 
-`GET /api` 返回 JSON：
+```
+GET /          → Web面板
+GET /api       → JSON数据
+GET /alarm     → 切换布防/撤防
+```
+
+JSON 响应示例:
 ```json
 {
-  "temperature": 26.5,
-  "light": 68,
+  "temperature": 25.3,
+  "light": 60,
   "distance": 120.0,
   "pir": 0,
   "alarm": true,
+  "led": "normal",
   "uptime": 3600
 }
 ```
-
-## 报警逻辑
-
-| 状态 | LED | 蜂鸣器 |
-|------|-----|--------|
-| 温度 >35°C 或 距离 <30cm | 快闪 | 响 |
-| 检测到人体 | 柔和亮 | 静音 |
-| 光照 <20% | 中等亮 | 静音 |
-| 正常 | 灭 | 静音 |
-
-按键或网页按钮切换布防/撤防。
-
-## 项目结构
-
-```
-SmartStation_modular.ino
-├── Config      → WiFi/报警阈值/采样间隔
-├── Pins        → 引脚定义
-├── Sensors     → 传感器采集（含NTC Steinhart-Hart转换）
-├── Alarm       → 报警逻辑 + LED + 蜂鸣器
-├── Button      → 按键中断（防抖）
-├── WebPage     → HTML 页面生成
-├── Web         → 路由处理 + WebServer
-└── Wifi        → 连接管理
-```
-
-## License
-
-MIT
